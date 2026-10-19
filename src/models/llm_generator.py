@@ -27,7 +27,7 @@ if not GEMINI_API_KEY:
 genai.configure(api_key=GEMINI_API_KEY)
 
 # ── Cấu hình mô hình ─────────────────────────────────────────────────────────
-DEFAULT_LLM_MODEL   = "gemini-2.5-flash-lite"
+DEFAULT_LLM_MODEL   = "gemini-3.5-flash-lite"
 DEFAULT_EMBED_MODEL = "gemini-embedding-001"
 MAX_CONTEXT_CHARS   = 20000
 
@@ -294,7 +294,7 @@ def get_embedding(texts: list, model_name: str = DEFAULT_EMBED_MODEL) -> list:
             all_embeddings.extend(result['embedding'])
         except Exception as e:
             if "429" in str(e) or "quota" in str(e).lower():
-                print(f"⏳ Quá tải API, đang đợi 60s...")
+                print(f"[Wait] Quá tải API, đang đợi 60s...")
                 time.sleep(60)
                 result = genai.embed_content(
                     model=model_name,

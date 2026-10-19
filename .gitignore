@@ -8,4 +8,6 @@ __pycache__/
 .env
 chroma_db/
 *.pdf
+tai_lieu/
+chat_history/
 .streamlit/secrets.toml

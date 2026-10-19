@@ -33,7 +33,8 @@ from src.models.llm_generator import (
 )
 
 import logging, traceback
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
+logging.getLogger("pdfminer").setLevel(logging.WARNING)
 
 # ════════════════════════════════════════════════════════════════════════════
 # APP + MIDDLEWARE
