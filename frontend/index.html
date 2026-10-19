@@ -7,6 +7,7 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📚</text></svg>"/>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"/>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -140,17 +141,111 @@
     .av { width:28px; height:28px; border-radius:50%; flex-shrink:0; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:600; }
     .av.bot { background:linear-gradient(135deg,rgba(139,92,246,.3),rgba(139,92,246,.1)); color:var(--accent-light); font-size:13px; border:1px solid var(--border-accent); }
     .av.user { background:var(--bg-elevated); color:var(--accent-light); border:1px solid var(--border); }
-    .bub { max-width:76%; padding:10px 14px; line-height:1.7; font-size:13px; color:var(--text-primary); }
-    .bub.bot { background:var(--bg-elevated); border:1px solid var(--border); border-radius:3px 14px 14px 14px; }
-    .bub.user { background:var(--bg-active); border:1px solid var(--border-accent); border-radius:14px 3px 14px 14px; color:var(--accent-light); }
-    .bub.web-tag::before { content:'🌐 Web Search · '; font-size:10px; color:var(--blue); font-weight:600; }
+    .bub { max-width:82%; padding:12px 16px; line-height:1.7; font-size:13.5px; color:var(--text-primary); }
+    .bub.bot { 
+      background:var(--bg-elevated); 
+      border:1px solid var(--border); 
+      border-radius:4px 16px 16px 16px; 
+      box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+    }
+    .bub.user { background:var(--bg-active); border:1px solid var(--border-accent); border-radius:16px 4px 16px 16px; color:var(--accent-light); }
+    .bub.web-tag::before { content:'🌐 Web Search · '; font-size:10.5px; color:var(--blue); font-weight:600; }
+
+    /* ── Typography & Markdown trong phản hồi của bot ── */
+    .bub.bot h1, .bub.bot h2, .bub.bot h3, .bub.bot h4 { 
+      color: #f3f0ff; 
+      margin: 12px 0 6px; 
+      font-weight: 600; 
+      line-height: 1.45; 
+    }
+    .bub.bot h1:first-child, .bub.bot h2:first-child, .bub.bot h3:first-child, .bub.bot h4:first-child { 
+      margin-top: 0; 
+    }
+    .bub.bot h2 { font-size: 15.5px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 4px; }
+    .bub.bot h3 { font-size: 14.5px; color: var(--accent-light); }
+    .bub.bot h4 { font-size: 13.5px; color: #a78bfa; }
+    .bub.bot p { margin-bottom: 8px; line-height: 1.7; }
+    .bub.bot p:last-child { margin-bottom: 0; }
+    .bub.bot ul, .bub.bot ol { margin: 6px 0 10px 0; padding-left: 20px; }
+    .bub.bot li { margin-bottom: 6px; line-height: 1.65; }
+    .bub.bot li::marker { color: var(--accent); }
+    .bub.bot strong { color: #ffffff; font-weight: 600; }
+    .bub.bot em { color: #ddd6fe; font-style: italic; }
+    .bub.bot blockquote { 
+      border-left: 3px solid var(--accent); 
+      background: rgba(139,92,246,0.08); 
+      padding: 8px 12px; 
+      border-radius: 0 8px 8px 0; 
+      margin: 8px 0; 
+      color: rgba(255,255,255,0.85); 
+    }
+    .bub.bot code { 
+      background: rgba(255,255,255,0.08); 
+      color: #f472b6; 
+      padding: 2px 6px; 
+      border-radius: 4px; 
+      font-family: monospace; 
+      font-size: 12px; 
+    }
+    .bub.bot pre { 
+      background: #0c0c16; 
+      border: 1px solid rgba(255,255,255,0.1); 
+      border-radius: 8px; 
+      padding: 10px 14px; 
+      overflow-x: auto; 
+      margin: 10px 0; 
+    }
+    .bub.bot pre code { background: transparent; padding: 0; color: #c4b5fd; }
+    .bub.bot table { 
+      border-collapse: collapse; 
+      width: 100%; 
+      margin: 10px 0; 
+      font-size: 12.5px; 
+      border-radius: 6px; 
+      overflow: hidden; 
+    }
+    .bub.bot th, .bub.bot td { border: 1px solid rgba(255,255,255,0.1); padding: 7px 11px; text-align: left; }
+    .bub.bot th { background: rgba(139,92,246,0.22); color: #fff; font-weight: 600; }
+    .bub.bot tr:nth-child(even) { background: rgba(255,255,255,0.025); }
+    .bub.bot hr { border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 12px 0; }
+
+    /* Action buttons (Copy, TTS) */
+    .msg-actions { 
+      display: flex; 
+      align-items: center; 
+      gap: 5px; 
+      margin-top: 8px; 
+      padding-top: 6px; 
+      border-top: 1px solid rgba(255,255,255,0.05); 
+      justify-content: flex-end; 
+    }
+    .btn-action { 
+      background: rgba(255,255,255,0.04); 
+      border: 1px solid rgba(255,255,255,0.08); 
+      cursor: pointer; 
+      font-size: 11px; 
+      padding: 3px 8px; 
+      border-radius: 4px; 
+      color: var(--text-muted); 
+      transition: all .12s; 
+      display: inline-flex; 
+      align-items: center; 
+      gap: 3px; 
+      font-family: inherit;
+    }
+    .btn-action:hover { 
+      background: rgba(139,92,246,0.16); 
+      border-color: var(--border-accent); 
+      color: var(--accent-light); 
+    }
+    .btn-action.speaking { color: #22c55e; border-color: #22c55e; }
 
     .cite-chips { display:flex; flex-wrap:wrap; gap:4px; margin-top:8px; }
-    .cite-chip { font-size:11px; background:rgba(139,92,246,.1); color:var(--accent-light); border:1px solid var(--border-accent); border-radius:var(--r-sm); padding:2px 9px; cursor:pointer; font-weight:500; transition:background .1s; }
-    .cite-chip:hover { background:rgba(139,92,246,.22); }
+    .cite-chip { font-size:11px; background:rgba(139,92,246,.12); color:var(--accent-light); border:1px solid var(--border-accent); border-radius:var(--r-sm); padding:3px 9px; cursor:pointer; font-weight:500; transition:all .12s; }
+    .cite-chip:hover { background:rgba(139,92,246,.25); transform: translateY(-1px); }
     .web-chips { display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; }
-    .web-chip { font-size:10.5px; background:rgba(59,130,246,.1); color:#93c5fd; border:1px solid rgba(59,130,246,.3); border-radius:var(--r-sm); padding:2px 8px; cursor:pointer; }
-    .web-chip:hover { background:rgba(59,130,246,.2); }
+    .web-chip { font-size:10.5px; background:rgba(59,130,246,.12); color:#93c5fd; border:1px solid rgba(59,130,246,.3); border-radius:var(--r-sm); padding:3px 8px; cursor:pointer; transition:all .12s; }
+    .web-chip:hover { background:rgba(59,130,246,.25); transform: translateY(-1px); }
 
     .typing { display:flex; gap:4px; align-items:center; padding:10px 14px; }
     .typing span { width:6px; height:6px; border-radius:50%; background:var(--accent); display:block; animation:tdot 1.2s infinite ease-in-out; opacity:.6; }
@@ -398,6 +493,8 @@ function bindEvents() {
     if (wc) window.open(wc.dataset.url, '_blank');
     const tts = e.target.closest('.btn-tts');
     if (tts) speakText(tts.dataset.text, tts);
+    const cp = e.target.closest('.btn-copy');
+    if (cp) copyMsg(cp.dataset.text, cp);
   });
 
   const fi = document.getElementById('fileInput');
@@ -674,6 +771,43 @@ function speakText(text, btnEl) {
   window.speechSynthesis.speak(utt);
 }
 
+// ── Markdown Parser & Helper ───────────────────────────────────────────────
+function formatMarkdown(text) {
+  if (!text) return '';
+  if (window.marked && typeof window.marked.parse === 'function') {
+    try {
+      return marked.parse(text);
+    } catch(e) {
+      console.warn('Marked parse error:', e);
+    }
+  }
+  // Fallback regex markdown parser
+  let html = esc(text);
+  html = html.replace(/^### (.*$)/gim, '<h4 style="margin:10px 0 4px;color:#c4b5fd;font-size:14px;font-weight:600">$1</h4>');
+  html = html.replace(/^## (.*$)/gim, '<h3 style="margin:12px 0 6px;color:#f0efff;font-size:15px;font-weight:700;border-bottom:1px solid rgba(255,255,255,0.08);padding-bottom:3px">$1</h3>');
+  html = html.replace(/^# (.*$)/gim, '<h2 style="margin:14px 0 8px;color:#f0efff;font-size:16px;font-weight:700">$1</h2>');
+  html = html.replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>');
+  html = html.replace(/\*\*(.*?)\*\*/g, '<strong style="color:#ffffff">$1</strong>');
+  html = html.replace(/\*(.*?)\*/g, '<em style="color:#ddd6fe">$1</em>');
+  html = html.replace(/^\s*-\s+(.*$)/gim, '<li style="margin-left:18px;margin-bottom:4px;list-style-type:disc">$1</li>');
+  html = html.replace(/^\s*\d+\.\s+(.*$)/gim, '<li style="margin-left:18px;margin-bottom:4px;list-style-type:decimal">$1</li>');
+  html = html.replace(/^\> (.*$)/gim, '<blockquote style="border-left:3px solid #8b5cf6;padding:6px 12px;margin:8px 0;background:rgba(139,92,246,0.08);color:#d1d5db;border-radius:0 6px 6px 0">$1</blockquote>');
+  html = html.replace(/`([^`]+)`/g, '<code style="background:rgba(255,255,255,0.1);padding:2px 5px;border-radius:4px;font-family:monospace;font-size:12px;color:#f472b6">$1</code>');
+  html = html.replace(/\n\n+/g, '<br/><br/>');
+  html = html.replace(/\n/g, '<br/>');
+  return html;
+}
+
+function copyMsg(text, btnEl) {
+  navigator.clipboard.writeText(text).then(() => {
+    const orig = btnEl.innerHTML;
+    btnEl.innerHTML = '✅ Đã chép';
+    setTimeout(() => { btnEl.innerHTML = orig; }, 1800);
+  }).catch(() => {
+    showToast('Không thể sao chép văn bản', true);
+  });
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 //  SEND MESSAGE (hỗ trợ cả RAG và Web Search)
 // ════════════════════════════════════════════════════════════════════════════
@@ -775,18 +909,23 @@ function msgHTML(m) {
   const isUser = m.role === 'user';
   const av     = isUser ? '<div class="av user">M</div>' : '<div class="av bot">✦</div>';
 
-  // Nút TTS cho tin nhắn bot
-  const ttsBtn = !isUser
-    ? `<button class="btn-tts" data-text="${esc(m.content)}" title="Đọc to">🔊</button>`
+  const webBadge = m.isWeb ? ' web-tag' : '';
+  const contentHTML = isUser ? esc(m.content).replace(/\n/g, '<br/>') : formatMarkdown(m.content);
+
+  // Thanh nút hành động cho bot (Copy & TTS)
+  const actionsBar = !isUser
+    ? `<div class="msg-actions">
+        <button class="btn-action btn-copy" data-text="${esc(m.content)}" title="Sao chép câu trả lời">📋 Sao chép</button>
+        <button class="btn-action btn-tts" data-text="${esc(m.content)}" title="Đọc câu trả lời">🔊 Đọc</button>
+      </div>`
     : '';
 
-  const webBadge = m.isWeb ? ' web-tag' : '';
-  const bub = `<div class="bub ${isUser?'user':'bot'+webBadge}">${m.content}${ttsBtn}</div>`;
+  const bub = `<div class="bub ${isUser?'user':'bot'+webBadge}">${contentHTML}${actionsBar}</div>`;
 
   // Citation chips (từ tài liệu)
   const citeChips = (!isUser && m.citations?.length)
     ? `<div class="cite-chips">${m.citations.map(c=>
-        `<span class="cite-chip" data-file-name="${esc(c.file_name)}">
+        `<span class="cite-chip" data-file-name="${esc(c.file_name)}" title="${esc(c.snippet||'')}">
           📄 ${esc(c.file_name)} · Tr.${c.page}${c.heading?' · '+esc(c.heading):''}
         </span>`).join('')}</div>`
     : '';
@@ -798,7 +937,7 @@ function msgHTML(m) {
       ).join('')}</div>`
     : '';
 
-  const body = `<div style="display:flex;flex-direction:column;gap:5px;max-width:76%">${bub}${citeChips}${webChips}</div>`;
+  const body = `<div style="display:flex;flex-direction:column;gap:5px;max-width:82%">${bub}${citeChips}${webChips}</div>`;
   return `<div class="msg ${isUser?'user':''}">${isUser ? body+av : av+body}</div>`;
 }
 

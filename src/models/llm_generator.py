@@ -165,16 +165,24 @@ def explain_term(
     model_to_use = _resolve_model(model_name)
     context = _build_context(retrieved_chunks)
 
-    prompt = f"""Hãy giải thích thuật ngữ: "{term}" BẮT BUỘC DỰA TRÊN ngữ cảnh dưới đây.
+    prompt = f"""Hãy giải thích thuật ngữ: "{term}" BẮT BUỘC DỰA TRÊN ngữ cảnh giáo trình dưới đây.
 
 ---
 CONTEXT TÀI LIỆU:
 {context}
 ---
-YÊU CẦU:
-- BẮT BUỘC DỰA TRÊN ĐÚNG TÀI LIỆU ĐÃ CUNG CẤP. Nêu định nghĩa chính xác và ví dụ nếu có trong tài liệu.
-- Chèn nhãn trích dẫn [Nguồn N] tương ứng.
-- Trả lời bằng tiếng Việt dễ hiểu và chuẩn xác.
+QUY TẮC NỘI DUNG & ĐỊNH DẠNG TRÌNH BÀY ĐẸP:
+1. NỘI DUNG BẮT BUỘC DỰA VÀO TÀI LIỆU CUNG CẤP TRONG CONTEXT. Nêu định nghĩa chính xác và ví dụ nếu có.
+2. BỐ CỤC TRÌNH BÀY CHUYÊN NGHIỆP, RÕ RÀNG (dùng Markdown):
+   - Sử dụng các tiêu đề rõ ràng:
+     ### 📌 Định nghĩa & Bản chất
+     ### ⚙️ Đặc điểm & Vai trò cốt lõi
+     ### 💡 Ví dụ minh họa (nếu có trong tài liệu)
+     ### 📝 Tóm lại
+   - Mỗi ý trong danh sách gạch đầu dòng (- ) PHẢI xuống dòng riêng biệt, có khoảng trống giữa các đoạn. Tuyệt đối không dồn nhiều ý vào một dòng.
+   - In đậm (**từ khóa**) các thuật ngữ, khái niệm quan trọng để người đọc dễ theo dõi.
+3. Chèn nhãn trích dẫn [Nguồn N] ở cuối mỗi luận điểm tương ứng.
+4. Trả lời bằng tiếng Việt chuẩn xác, sư phạm và dễ hiểu.
 
 GIẢI THÍCH:"""
 
@@ -183,11 +191,17 @@ GIẢI THÍCH:"""
         response = client.chat.completions.create(
             model=model_to_use,
             messages=[
-                {"role": "system", "content": "Bạn là trợ lý giải thích thuật ngữ chuyên sâu bám sát tài liệu học tập."},
+                {
+                    "role": "system",
+                    "content": (
+                        "Bạn là trợ lý giải thích thuật ngữ chuyên sâu, trình bày sư phạm đẹp mắt, "
+                        "luôn xuống dòng rõ ràng và bám sát tài liệu giáo trình."
+                    )
+                },
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.0,
-            max_tokens=2000
+            temperature=0.1,
+            max_tokens=2500
         )
         raw_answer = response.choices[0].message.content or ""
     except Exception as e:
@@ -381,14 +395,19 @@ def _build_context(
 
 
 def _build_cited_prompt(question: str, context: str) -> str:
-    return f"""Bạn là một trợ lý hỏi đáp tài liệu học tập trung thực và chính xác.
-Nhiệm vụ: Hãy trả lời câu hỏi BẮT BUỘC DỰA TRÊN ĐÚNG THÔNG TIN TỪ CÁC TÀI LIỆU ĐÃ CUNG CẤP TRONG PHẦN NGỮ CẢNH.
+    return f"""Bạn là một trợ lý hỏi đáp tài liệu học tập trung thực, chính xác và có kỹ năng trình bày sư phạm xuất sắc.
+Nhiệm vụ: Trả lời câu hỏi BẮT BUỘC DỰA TRÊN THÔNG TIN TỪ CÁC TÀI LIỆU TRONG NGỮ CẢNH.
 
 ---
-HƯỚNG DẪN QUAN TRỌNG:
-1. ĐÁP ÁN BẮT BUỘC DỰA VÀO CÁC TÀI LIỆU CÓ SẴN TRONG NGỮ CẢNH. TUYỆT ĐỐI KHÔNG suy diễn hoặc bịa đặt thông tin bên ngoài tài liệu. Nếu tài liệu không chứa đủ thông tin để trả lời, hãy nói rõ: "Dựa trên các tài liệu đã cung cấp, không có đủ thông tin để trả lời câu hỏi này."
-2. Chèn nhãn trích dẫn [Nguồn X] tương ứng ở cuối mỗi ý hoặc mỗi đoạn thông tin lấy từ tài liệu.
-3. Trả lời bằng tiếng Việt rõ ràng, giải thích cặn kẽ và bám sát nguyên văn hoặc ý nghĩa trong tài liệu học tập.
+HƯỚNG DẪN QUAN TRỌNG VỀ NỘI DUNG & ĐỊNH DẠNG TRÌNH BÀY:
+1. ĐÁP ÁN BẮT BUỘC DỰA VÀO CÁC TÀI LIỆU CÓ SẴN TRONG NGỮ CẢNH. Tuyệt đối không suy diễn hoặc bịa đặt thông tin bên ngoài tài liệu. Nếu tài liệu không đủ thông tin, hãy nói rõ: "Dựa trên các tài liệu đã cung cấp, không có đủ thông tin để trả lời câu hỏi này."
+2. BỐ CỤC TRÌNH BÀY ĐẸP, MẠCH LẠC (dùng Markdown):
+   - Sử dụng các tiêu đề rõ ràng (dùng Markdown: ###, ####) để phân loại nội dung.
+   - Luôn xuống dòng riêng biệt cho từng ý gạch đầu dòng (- ) hoặc đánh số (1., 2.). Tuyệt đối không viết nối tiếp nhiều gạch đầu dòng trên cùng một dòng.
+   - In đậm (**từ khóa**) các thuật ngữ, khái niệm quan trọng để người đọc nắm bắt nhanh.
+   - Thêm phần "### 📝 Tóm lại" hoặc "### 🎯 Kết luận" ngắn gọn ở cuối câu trả lời.
+3. Chèn nhãn trích dẫn [Nguồn X] tương ứng ở cuối mỗi ý hoặc đoạn thông tin trích xuất.
+4. Trả lời bằng tiếng Việt rõ ràng, giải thích cặn kẽ và bám sát nguyên văn hoặc ý nghĩa trong tài liệu học tập.
 
 NGỮ CẢNH TÀI LIỆU:
 {context if context else "(Không tìm thấy tài liệu phù hợp trong kho lưu trữ)"}
