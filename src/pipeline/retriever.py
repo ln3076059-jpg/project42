@@ -84,34 +84,23 @@ def search_workspace(
 ) -> List[RetrievedChunk]:
     """
     Tìm kiếm top-k chunks liên quan nhất trong một workspace cụ thể.
-    Tự động quét nhiều file khác nhau trong cùng workspace (Cross Analysis).
-
-    Args:
-        query          (str): Câu hỏi của người dùng
-        workspace_name (str): Tên workspace cần tìm kiếm trong đó
-        top_k          (int): Số lượng chunk trả về (default: 5)
-
-    Returns:
-        List[RetrievedChunk]: Danh sách chunks sắp xếp theo độ liên quan giảm dần.
-                              Mỗi phần tử chứa "content", "metadata", "score".
-
-    Raises:
-        ValueError: Nếu workspace_name không tồn tại trong DB
-
-    Example:
-        >>> results = search_workspace("Định nghĩa giới hạn là gì?", "Giải Tích", top_k=4)
-        >>> for r in results:
-        ...     print(r["metadata"]["file_name"], r["metadata"]["page"], r["score"])
-        giai_tich_chuong1.pdf  5  0.92
-        giai_tich_chuong2.pdf  12 0.87
+    Sử dụng Hybrid Search (BM25 + Semantic Vector) để đạt độ chính xác cao nhất
+    cho cả tiếng Việt và thuật ngữ kỹ thuật.
     """
     if top_k <= 0:
         return []
 
+    try:
+        results = hybrid_search(query, workspace_name, top_k=top_k, alpha=0.5)
+        if results:
+            return results
+    except Exception as e:
+        pass
+
+    # Fallback thuần vector nếu hybrid gặp sự cố
     from src.models.llm_generator import get_embedding
 
     collection = _get_collection(workspace_name)
-
     count = collection.count()
     if count == 0:
         raise ValueError(
@@ -119,15 +108,25 @@ def search_workspace(
             f"Hãy upload PDF trước."
         )
 
-    # Clamp n_results để không vượt quá số documents trong collection
     k = min(top_k, count)
-
-    result = collection.query(
-        query_embeddings=get_embedding([query]),
-        n_results=k,
-        where={"workspace_name": workspace_name},
-        include=["documents", "metadatas", "distances"],
-    )
+    global _chroma_client
+    try:
+        result = collection.query(
+            query_embeddings=get_embedding([query]),
+            n_results=k,
+            include=["documents", "metadatas", "distances"],
+        )
+    except Exception as e:
+        if "finding id" in str(e).lower() or "plan" in str(e).lower() or "internal" in str(e).lower():
+            _chroma_client = None
+            collection = _get_collection(workspace_name)
+            result = collection.query(
+                query_embeddings=get_embedding([query]),
+                n_results=k,
+                include=["documents", "metadatas", "distances"],
+            )
+        else:
+            raise e
 
     documents = (result.get("documents") or [[]])[0]
     metadatas = (result.get("metadatas") or [[]])[0]
@@ -144,7 +143,6 @@ def search_workspace(
         for index, (document, metadata) in enumerate(zip(documents, metadatas))
     ]
 
-    # Sắp xếp theo score giảm dần (cao nhất = liên quan nhất)
     chunks.sort(key=lambda c: c["score"], reverse=True)
     return chunks
 

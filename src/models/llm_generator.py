@@ -1,17 +1,17 @@
 """
-llm_generator.py  —  v3.0
-Bổ sung:  generate_web_search_answer()  dùng Google Custom Search + Gemini tổng hợp
+llm_generator.py  —  v4.0 (Full Groq + Local ONNX Embeddings)
+- Sử dụng 100% Groq API cho mọi tác vụ sinh văn bản (Chat, RAG, Tóm tắt, Thuật ngữ, Web Search).
+- Sử dụng mô hình nhúng cục bộ all-MiniLM-L6-v2 (ChromaDB ONNX) chạy 100% offline, không giới hạn rate limit.
 """
 
 import os
-import time
 import re
 import json
 import asyncio
-import aiohttp
-import google.generativeai as genai
 from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
+from groq import Groq, AsyncGroq
+from chromadb.utils import embedding_functions
 
 load_dotenv()
 
@@ -20,25 +20,44 @@ RetrievedChunk = Dict[str, Any]
 AnswerDict     = Dict[str, Any]
 CitationDict   = Dict[str, Any]
 
-# ── API KEY ──────────────────────────────────────────────────────────────────
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if not GEMINI_API_KEY:
-    raise ValueError("⚠️ CHƯA CÓ API KEY: Vui lòng kiểm tra lại file .env")
+# ── GROQ CONFIGURATION ───────────────────────────────────────────────────────
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+if not GROQ_API_KEY:
+    raise ValueError("⚠️ CHƯA CÓ GROQ API KEY: Vui lòng kiểm tra lại biến GROQ_API_KEY trong file .env")
 
-genai.configure(api_key=GEMINI_API_KEY)
-
-# ── Cấu hình mô hình ─────────────────────────────────────────────────────────
-DEFAULT_LLM_MODEL   = "gemini-3.5-flash-lite"
-DEFAULT_EMBED_MODEL = "gemini-embedding-001"
+DEFAULT_LLM_MODEL   = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+DEFAULT_EMBED_MODEL = "all-MiniLM-L6-v2"
 MAX_CONTEXT_CHARS   = 20000
 
-# ── Groq API (dùng cho Web Search & Tri thức mở rộng ngoài tài liệu) ──────────
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL   = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+# Singleton Groq clients
+_groq_sync_client: Optional[Groq] = None
+_groq_async_client: Optional[AsyncGroq] = None
+_embed_function = None
+
+
+def _get_groq_sync_client() -> Groq:
+    global _groq_sync_client
+    if _groq_sync_client is None:
+        _groq_sync_client = Groq(api_key=GROQ_API_KEY)
+    return _groq_sync_client
+
+
+def _get_groq_async_client() -> AsyncGroq:
+    global _groq_async_client
+    if _groq_async_client is None:
+        _groq_async_client = AsyncGroq(api_key=GROQ_API_KEY)
+    return _groq_async_client
+
+
+def _resolve_model(model_name: Optional[str]) -> str:
+    """Nếu model_name truyền vào là gemini hoặc rỗng, tự động chuyển về mô hình Groq mặc định."""
+    if not model_name or "gemini" in model_name.lower():
+        return DEFAULT_LLM_MODEL
+    return model_name
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# TASK 3.1 — Sinh câu trả lời có trích dẫn (giữ nguyên)
+# TASK 3.1 — Sinh câu trả lời có trích dẫn (Groq LLM)
 # ════════════════════════════════════════════════════════════════════════════
 
 def generate_cited_answer(
@@ -47,20 +66,35 @@ def generate_cited_answer(
     model_name: str = DEFAULT_LLM_MODEL,
     temperature: float = 0.0
 ) -> AnswerDict:
+    model_to_use = _resolve_model(model_name)
     context = _build_context(retrieved_chunks)
-    prompt  = _build_cited_prompt(question, context)
+    prompt = _build_cited_prompt(question, context)
 
+    client = _get_groq_sync_client()
     try:
-        model    = genai.GenerativeModel(model_name)
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.GenerationConfig(temperature=temperature)
+        response = client.chat.completions.create(
+            model=model_to_use,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Bạn là một trợ lý hỏi đáp tài liệu học tập trung thực, chính xác và chuyên nghiệp.\n"
+                        "QUY TẮC BẮT BUỘC:\n"
+                        "1. ĐÁP ÁN BẮT BUỘC DỰA VÀO CÁC TÀI LIỆU CÓ SẴN TRONG NGỮ CẢNH. TUYỆT ĐỐI KHÔNG tự suy diễn hoặc bịa đặt thông tin ngoài tài liệu. Nếu trong tài liệu không có thông tin để trả lời câu hỏi, hãy nói rõ: 'Dựa trên các tài liệu đã cung cấp, không có đủ thông tin để trả lời câu hỏi này.'\n"
+                        "2. Chèn nhãn trích dẫn [Nguồn X] tương ứng ở cuối mỗi luận điểm hoặc đoạn thông tin trích xuất từ tài liệu.\n"
+                        "3. Trình bày bằng tiếng Việt rõ ràng, giải thích cặn kẽ, chuẩn xác theo giáo trình."
+                    )
+                },
+                {"role": "user", "content": prompt}
+            ],
+            temperature=temperature,
+            max_tokens=3000
         )
-        raw_answer = response.text
+        raw_answer = response.choices[0].message.content or ""
     except Exception as e:
-        raw_answer = f"⚠️ Lỗi từ máy chủ AI: {str(e)}"
+        raw_answer = f"⚠️ Lỗi từ máy chủ Groq AI: {str(e)}"
 
-    citations    = _extract_citations(retrieved_chunks, raw_answer)
+    citations = _extract_citations(retrieved_chunks, raw_answer)
     clean_answer = re.sub(r'\s*\[Nguồn \d+\]|\s*\[\d+\]', '', raw_answer)
 
     # Fallback citation
@@ -70,16 +104,16 @@ def generate_cited_answer(
         content = best.get('content', '')
         citations.append({
             "file_name": meta.get('file_name', 'Tài liệu không tên'),
-            "page":      meta.get('page', 1),
-            "heading":   meta.get('heading', ""),
-            "snippet":   content[:120] + "..." if len(content) > 120 else content
+            "page": meta.get('page', 1),
+            "heading": meta.get('heading', ""),
+            "snippet": content[:120] + "..." if len(content) > 120 else content
         })
 
-    return {"answer": clean_answer, "citations": citations, "model": model_name}
+    return {"answer": clean_answer, "citations": citations, "model": model_to_use}
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# TASK 3.3 — Tóm tắt (giữ nguyên)
+# TASK 3.3 — Tóm tắt tài liệu (Groq LLM)
 # ════════════════════════════════════════════════════════════════════════════
 
 def summarize_doc(
@@ -87,38 +121,40 @@ def summarize_doc(
     model_name: str = DEFAULT_LLM_MODEL
 ) -> AnswerDict:
     """Tóm tắt ngắn gọn nội dung cốt lõi dựa trên toàn bộ văn bản của tài liệu."""
+    model_to_use = _resolve_model(model_name)
     if not doc_text.strip():
-        return {"summary": "⚠️ Tài liệu không có nội dung văn bản để tóm tắt.", "model": model_name}
+        return {"summary": "⚠️ Tài liệu không có nội dung văn bản để tóm tắt.", "model": model_to_use}
 
-    prompt = f"""Bạn là chuyên gia phân tích tài liệu cao cấp. Hãy đọc toàn bộ văn bản được cung cấp dưới đây và viết một bản tóm tắt ngắn gọn, súc tích về nội dung cốt lõi của tài liệu này.
-
----
-VĂN BẢN TOÀN VẸN:
-{doc_text}
----
-
-YÊU CẦU:
-- Bố cục rõ ràng, mạch lạc (sử dụng dấu gạch đầu dòng).
-- Tập trung vào mục đích chính, các luận điểm cốt lõi hoặc định nghĩa quan trọng nhất.
-- Độ dài khoảng 3-5 câu chất lượng cao.
-
-TÓM TẮT:"""
-
+    client = _get_groq_sync_client()
     try:
-        model = genai.GenerativeModel(model_name)
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.GenerationConfig(temperature=0.2)
+        response = client.chat.completions.create(
+            model=model_to_use,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Bạn là chuyên gia phân tích tài liệu cao cấp. "
+                        "Hãy đọc toàn bộ văn bản được cung cấp và viết một bản tóm tắt ngắn gọn, súc tích về nội dung cốt lõi của tài liệu.\n"
+                        "YÊU CẦU:\n"
+                        "- Bố cục rõ ràng, mạch lạc (sử dụng dấu gạch đầu dòng).\n"
+                        "- Tập trung vào mục đích chính, các luận điểm cốt lõi hoặc định nghĩa quan trọng nhất.\n"
+                        "- Độ dài khoảng 3-6 câu chất lượng cao bằng tiếng Việt."
+                    )
+                },
+                {"role": "user", "content": f"VĂN BẢN TÀI LIỆU:\n{doc_text[:MAX_CONTEXT_CHARS]}"}
+            ],
+            temperature=0.2,
+            max_tokens=2000
         )
-        ans = response.text
+        ans = response.choices[0].message.content or ""
     except Exception as e:
-        ans = f"⚠️ Lỗi tóm tắt: {str(e)}"
+        ans = f"⚠️ Lỗi tóm tắt từ Groq AI: {str(e)}"
 
-    return {"summary": ans, "citations": [], "model": model_name}
+    return {"summary": ans, "citations": [], "model": model_to_use}
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# TASK 3.3 — Giải thích thuật ngữ (giữ nguyên)
+# TASK 3.3 — Giải thích thuật ngữ (Groq LLM)
 # ════════════════════════════════════════════════════════════════════════════
 
 def explain_term(
@@ -126,38 +162,45 @@ def explain_term(
     retrieved_chunks: List[RetrievedChunk],
     model_name: str = DEFAULT_LLM_MODEL
 ) -> AnswerDict:
+    model_to_use = _resolve_model(model_name)
     context = _build_context(retrieved_chunks)
-    prompt  = f"""Hãy giải thích thuật ngữ: "{term}" dựa trên ngữ cảnh dưới đây.
+
+    prompt = f"""Hãy giải thích thuật ngữ: "{term}" BẮT BUỘC DỰA TRÊN ngữ cảnh dưới đây.
 
 ---
-CONTEXT:
+CONTEXT TÀI LIỆU:
 {context}
 ---
 YÊU CẦU:
-- Định nghĩa dễ hiểu. Nêu ví dụ nếu có trong tài liệu.
-- Trích dẫn nguồn [Nguồn N].
+- BẮT BUỘC DỰA TRÊN ĐÚNG TÀI LIỆU ĐÃ CUNG CẤP. Nêu định nghĩa chính xác và ví dụ nếu có trong tài liệu.
+- Chèn nhãn trích dẫn [Nguồn N] tương ứng.
+- Trả lời bằng tiếng Việt dễ hiểu và chuẩn xác.
 
 GIẢI THÍCH:"""
 
+    client = _get_groq_sync_client()
     try:
-        model    = genai.GenerativeModel(model_name)
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.GenerationConfig(temperature=0.0)
+        response = client.chat.completions.create(
+            model=model_to_use,
+            messages=[
+                {"role": "system", "content": "Bạn là trợ lý giải thích thuật ngữ chuyên sâu bám sát tài liệu học tập."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.0,
+            max_tokens=2000
         )
-        raw_answer = response.text
+        raw_answer = response.choices[0].message.content or ""
     except Exception as e:
-        raw_answer = f"⚠️ Lỗi tra cứu: {str(e)}"
+        raw_answer = f"⚠️ Lỗi tra cứu từ Groq AI: {str(e)}"
 
-    citations    = _extract_citations(retrieved_chunks, raw_answer)
+    citations = _extract_citations(retrieved_chunks, raw_answer)
     clean_answer = re.sub(r'\s*\[Nguồn \d+\]|\s*\[\d+\]', '', raw_answer)
 
-    return {"answer": clean_answer, "citations": citations, "model": model_name}
+    return {"answer": clean_answer, "citations": citations, "model": model_to_use}
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# MỚI — Agentic Web Search Answer
-# Gọi Google Custom Search API → lấy snippet → Gemini tổng hợp với tài liệu
+# MỚI — Agentic Web Search Answer (Groq Web Knowledge Search)
 # ════════════════════════════════════════════════════════════════════════════
 
 async def generate_web_search_answer(
@@ -167,16 +210,12 @@ async def generate_web_search_answer(
     num_web_results: int = 5
 ) -> dict:
     """
-    1. Gọi Google Custom Search lấy top-N kết quả web.
-    2. Kết hợp snippet web + context tài liệu thành prompt.
-    3. Gemini sinh câu trả lời tổng hợp.
-
-    Returns dict gồm:
-        answer       : str
-        citations    : list  (từ tài liệu)
-        web_results  : list  (url, title, snippet từ web)
-        model        : str
+    1. Gọi Groq Web Knowledge Search lấy thông tin mở rộng.
+    2. Kết hợp thông tin mở rộng + context tài liệu thành prompt.
+    3. Groq sinh câu trả lời tổng hợp, ưu tiên tài liệu nội bộ.
     """
+    model_to_use = _resolve_model(model_name)
+
     # ── Bước 1: Tìm kiếm qua Groq (Web Knowledge Search) ─────────────────
     web_results = await _groq_web_search(question, num_web_results)
 
@@ -188,7 +227,7 @@ async def generate_web_search_answer(
 QUY TẮC BẮT BUỘC:
 1. ĐÁP ÁN BẮT BUỘC DỰA VÀO CÁC TÀI LIỆU CÓ SẴN (được cung cấp ở phần NGỮ CẢNH TỪ TÀI LIỆU).
 2. Toàn bộ định nghĩa, lý thuyết, giải thích cốt lõi phải bám sát tài liệu giáo trình và trích dẫn [Nguồn N].
-3. Chỉ sử dụng thông tin từ Web/Groq để bổ sung nếu tài liệu nội bộ chưa có hoặc chưa đầy đủ chi tiết.
+3. Chỉ sử dụng thông tin từ Tri thức mở rộng (Groq) để bổ sung nếu tài liệu nội bộ chưa có hoặc chưa đầy đủ chi tiết.
 4. Trình bày rõ ràng, mạch lạc bằng tiếng Việt, chính xác theo kiến thức giáo trình.
 
 ═══ NGỮ CẢNH TỪ TÀI LIỆU (ƯU TIÊN TUYỆT ĐỐI) ═══
@@ -202,25 +241,30 @@ QUY TẮC BẮT BUỘC:
 
 TRẢ LỜI:"""
 
-    # ── Bước 3: Gọi Gemini ───────────────────────────────────────────────
+    # ── Bước 3: Gọi Groq Tổng Hợp ─────────────────────────────────────────
+    client = _get_groq_async_client()
     try:
-        model    = genai.GenerativeModel(model_name)
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.GenerationConfig(temperature=0.2)
+        response = await client.chat.completions.create(
+            model=model_to_use,
+            messages=[
+                {"role": "system", "content": "Bạn là trợ lý học tập cao cấp, luôn ưu tiên tài liệu chính thống."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2,
+            max_tokens=3000
         )
-        raw_answer = response.text
+        raw_answer = response.choices[0].message.content or ""
     except Exception as e:
-        raw_answer = f"⚠️ Lỗi AI: {str(e)}"
+        raw_answer = f"⚠️ Lỗi Groq AI: {str(e)}"
 
-    citations    = _extract_citations(doc_chunks, raw_answer)
+    citations = _extract_citations(doc_chunks, raw_answer)
     clean_answer = re.sub(r'\s*\[Nguồn \d+\]|\s*\[\d+\]', '', raw_answer)
 
     return {
-        "answer":      clean_answer,
-        "citations":   citations,
+        "answer": clean_answer,
+        "citations": citations,
         "web_results": web_results,
-        "model":       model_name
+        "model": model_to_use
     }
 
 
@@ -229,46 +273,36 @@ async def _groq_web_search(query: str, num: int = 5) -> List[dict]:
     if not GROQ_API_KEY:
         return []
 
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0"
-    }
-    payload = {
-        "model": GROQ_MODEL,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "Bạn là công cụ tìm kiếm và cung cấp tri thức mở rộng (Web Knowledge Engine). "
-                    "Hãy tìm kiếm và cung cấp thông tin cập nhật, chính xác, súc tích về chủ đề của người dùng. "
-                    "BẮT BUỘC trả về đúng định dạng JSON object: {\"results\": [{\"title\": \"...\", \"snippet\": \"...\", \"url\": \"...\"}]}"
-                )
-            },
-            {"role": "user", "content": f"Chủ đề tìm kiếm: {query}"}
-        ],
-        "response_format": {"type": "json_object"},
-        "temperature": 0.2
-    }
-
+    client = _get_groq_async_client()
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status != 200:
-                    return []
-                data = await resp.json()
-                content = data["choices"][0]["message"]["content"]
-                parsed = json.loads(content)
-                items = parsed.get("results", [])
-                return [
-                    {
-                        "title": item.get("title", "Tri thức mở rộng (Groq)"),
-                        "url": item.get("url", "https://groq.com"),
-                        "snippet": item.get("snippet", "")
-                    }
-                    for item in items[:num]
-                ]
+        response = await client.chat.completions.create(
+            model=DEFAULT_LLM_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Bạn là công cụ tìm kiếm và cung cấp tri thức mở rộng (Web Knowledge Engine). "
+                        "Hãy tìm kiếm và cung cấp thông tin cập nhật, chính xác, súc tích về chủ đề của người dùng. "
+                        "BẮT BUỘC trả về đúng định dạng JSON object: {\"results\": [{\"title\": \"...\", \"snippet\": \"...\", \"url\": \"...\"}]}"
+                    )
+                },
+                {"role": "user", "content": f"Chủ đề tìm kiếm: {query}"}
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.2,
+            max_tokens=1500
+        )
+        content = response.choices[0].message.content or "{}"
+        parsed = json.loads(content)
+        items = parsed.get("results", [])
+        return [
+            {
+                "title": item.get("title", "Tri thức mở rộng (Groq)"),
+                "url": item.get("url", "https://groq.com"),
+                "snippet": item.get("snippet", "")
+            }
+            for item in items[:num]
+        ]
     except Exception as e:
         print(f"Lỗi Groq search: {e}")
         return []
@@ -288,45 +322,42 @@ def _build_web_context(web_results: List[dict]) -> str:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# GENERATE EMBEDDINGS (giữ nguyên)
+# GENERATE EMBEDDINGS (Local ONNX all-MiniLM-L6-v2)
 # ════════════════════════════════════════════════════════════════════════════
 
-def get_embedding(texts: list, model_name: str = DEFAULT_EMBED_MODEL) -> list:
-    all_embeddings = []
-    batch_size     = 50
+def get_embedding(texts: list, model_name: str = None) -> list:
+    """
+    Sinh vector nhúng sử dụng mô hình nhúng cục bộ all-MiniLM-L6-v2 (ChromaDB ONNX)
+    chạy 100% offline, không giới hạn rate limit, không phụ thuộc API bên ngoài.
+    """
+    global _embed_function
+    if _embed_function is None:
+        _embed_function = embedding_functions.DefaultEmbeddingFunction()
 
+    if not texts:
+        return []
+
+    batch_size = 64
+    all_embeddings = []
     for i in range(0, len(texts), batch_size):
         batch = texts[i:i + batch_size]
-        max_retries = 5
-        for attempt in range(max_retries):
-            try:
-                result = genai.embed_content(
-                    model=model_name,
-                    content=batch,
-                    task_type="retrieval_document"
-                )
-                all_embeddings.extend(result['embedding'])
-                break
-            except Exception as e:
-                if ("429" in str(e) or "quota" in str(e).lower()) and attempt < max_retries - 1:
-                    wait_time = 15 * (attempt + 1)
-                    print(f"[Wait] API Quota (thu lai {attempt + 1}/{max_retries}), doi {wait_time}s...")
-                    time.sleep(wait_time)
-                else:
-                    raise e
-        time.sleep(1.5)
+        # Clean text
+        clean_batch = [t if isinstance(t, str) and t.strip() else " " for t in batch]
+        embeddings = _embed_function(clean_batch)
+        all_embeddings.extend([[float(val) for val in emb] for emb in embeddings])
+
     return all_embeddings
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# HELPER FUNCTIONS (giữ nguyên)
+# HELPER FUNCTIONS
 # ════════════════════════════════════════════════════════════════════════════
 
 def _build_context(
     retrieved_chunks: List[RetrievedChunk],
     max_chars: int = MAX_CONTEXT_CHARS
 ) -> str:
-    context_parts  = []
+    context_parts = []
     current_length = 0
 
     for idx, chunk in enumerate(retrieved_chunks):
@@ -360,7 +391,7 @@ HƯỚNG DẪN QUAN TRỌNG:
 3. Trả lời bằng tiếng Việt rõ ràng, giải thích cặn kẽ và bám sát nguyên văn hoặc ý nghĩa trong tài liệu học tập.
 
 NGỮ CẢNH TÀI LIỆU:
-{context}
+{context if context else "(Không tìm thấy tài liệu phù hợp trong kho lưu trữ)"}
 
 CÂU HỎI:
 {question}

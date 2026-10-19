@@ -143,31 +143,36 @@ def _extract_table_chunks(file_path: str, workspace_name: str) -> List[ChunkDict
     chunks = []
     filename = os.path.basename(file_path)
 
-    with pdfplumber.open(file_path) as pdf:
-        for page_idx, page in enumerate(pdf.pages, start=1):
-            tables = page.extract_tables()
-            for table in tables:
-                if not table: continue
-            
-                markdow_table = ""
-                for i, row in enumerate(table):
-                    row_cleaning = [str(cell).replace("\n", "") if cell is not None else "" for cell in row] 
-                    markdow_table += "| " + " | ".join(row_cleaning) + " |\n"
+    try:
+        with pdfplumber.open(file_path) as pdf:
+            for page_idx, page in enumerate(pdf.pages, start=1):
+                if not (page.curves or page.lines or page.rects):
+                    continue
+                tables = page.extract_tables()
+                for table in tables:
+                    if not table: continue
+                
+                    markdow_table = ""
+                    for i, row in enumerate(table):
+                        row_cleaning = [str(cell).replace("\n", "") if cell is not None else "" for cell in row] 
+                        markdow_table += "| " + " | ".join(row_cleaning) + " |\n"
 
-                    if i ==0:
-                        markdow_table += "| " + " | ".join(["---"] * len(row_cleaning)) + " |\n"
-                        
-                if markdow_table.strip():
-                    chunks.append({
-                        "content": markdow_table.strip(),
-                        "metadata": {
-                            "file_name": filename,
-                            "page": page_idx,
-                            "workspace_name": workspace_name,
-                            "chunk_type": "text",
-                            "heading": "bảng"
-                        }
-                    })
+                        if i ==0:
+                            markdow_table += "| " + " | ".join(["---"] * len(row_cleaning)) + " |\n"
+                            
+                    if markdow_table.strip():
+                        chunks.append({
+                            "content": markdow_table.strip(),
+                            "metadata": {
+                                "file_name": filename,
+                                "page": page_idx,
+                                "workspace_name": workspace_name,
+                                "chunk_type": "text",
+                                "heading": "bảng"
+                            }
+                        })
+    except Exception as e:
+        pass
     return chunks
 
 # =============================================================================
