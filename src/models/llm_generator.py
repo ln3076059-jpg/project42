@@ -6,6 +6,7 @@ Bổ sung:  generate_web_search_answer()  dùng Google Custom Search + Gemini t�
 import os
 import time
 import re
+import json
 import asyncio
 import aiohttp
 import google.generativeai as genai
@@ -31,12 +32,9 @@ DEFAULT_LLM_MODEL   = "gemini-3.5-flash-lite"
 DEFAULT_EMBED_MODEL = "gemini-embedding-001"
 MAX_CONTEXT_CHARS   = 20000
 
-# ── Google Custom Search (dùng cho Web Search) ───────────────────────────────
-# Cần set trong .env:
-#   GOOGLE_SEARCH_API_KEY=...
-#   GOOGLE_SEARCH_CX=...
-GOOGLE_SEARCH_API_KEY = os.getenv("GOOGLE_SEARCH_API_KEY", "")
-GOOGLE_SEARCH_CX      = os.getenv("GOOGLE_SEARCH_CX", "")
+# ── Groq API (dùng cho Web Search & Tri thức mở rộng ngoài tài liệu) ──────────
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL   = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -179,30 +177,28 @@ async def generate_web_search_answer(
         web_results  : list  (url, title, snippet từ web)
         model        : str
     """
-    # ── Bước 1: Tìm kiếm web ─────────────────────────────────────────────
-    web_results = await _google_custom_search(question, num_web_results)
+    # ── Bước 1: Tìm kiếm qua Groq (Web Knowledge Search) ─────────────────
+    web_results = await _groq_web_search(question, num_web_results)
 
     # ── Bước 2: Xây dựng context kết hợp ────────────────────────────────
     web_context = _build_web_context(web_results)
     doc_context = _build_context(doc_chunks)
 
-    prompt = f"""Bạn là trợ lý thông minh tổng hợp thông tin từ hai nguồn: tài liệu nội bộ và web.
+    prompt = f"""Bạn là trợ lý hỏi đáp tài liệu học tập thông minh.
+QUY TẮC BẮT BUỘC:
+1. ĐÁP ÁN BẮT BUỘC DỰA VÀO CÁC TÀI LIỆU CÓ SẴN (được cung cấp ở phần NGỮ CẢNH TỪ TÀI LIỆU).
+2. Toàn bộ định nghĩa, lý thuyết, giải thích cốt lõi phải bám sát tài liệu giáo trình và trích dẫn [Nguồn N].
+3. Chỉ sử dụng thông tin từ Web/Groq để bổ sung nếu tài liệu nội bộ chưa có hoặc chưa đầy đủ chi tiết.
+4. Trình bày rõ ràng, mạch lạc bằng tiếng Việt, chính xác theo kiến thức giáo trình.
 
-═══ NGỮ CẢNH TỪ TÀI LIỆU ═══
-{doc_context if doc_context else "(Không có tài liệu liên quan)"}
+═══ NGỮ CẢNH TỪ TÀI LIỆU (ƯU TIÊN TUYỆT ĐỐI) ═══
+{doc_context if doc_context else "(Không tìm thấy đoạn nào trong tài liệu liên quan)"}
 
-═══ KẾT QUẢ TỪ WEB ═══
+═══ TRI THỨC MỞ RỘNG TỪ WEB (GROQ) ═══
 {web_context if web_context else "(Không có kết quả web)"}
 
 ═══ CÂU HỎI ═══
 {question}
-
-═══ YÊU CẦU ═══
-- Ưu tiên tài liệu nội bộ nếu có thông tin liên quan.
-- Bổ sung từ web nếu tài liệu không đủ.
-- Nêu rõ thông tin nào từ tài liệu, thông tin nào từ web.
-- Trích dẫn nguồn tài liệu bằng [Nguồn N] nếu dùng.
-- Trả lời bằng tiếng Việt, súc tích và chính xác.
 
 TRẢ LỜI:"""
 
@@ -211,7 +207,7 @@ TRẢ LỜI:"""
         model    = genai.GenerativeModel(model_name)
         response = model.generate_content(
             prompt,
-            generation_config=genai.GenerationConfig(temperature=0.3)
+            generation_config=genai.GenerationConfig(temperature=0.2)
         )
         raw_answer = response.text
     except Exception as e:
@@ -228,37 +224,53 @@ TRẢ LỜI:"""
     }
 
 
-async def _google_custom_search(query: str, num: int = 5) -> List[dict]:
-    """Gọi Google Custom Search JSON API và trả về list {title, url, snippet}."""
-    if not GOOGLE_SEARCH_API_KEY or not GOOGLE_SEARCH_CX:
-        # Nếu chưa cấu hình key → trả danh sách rỗng (không crash)
+async def _groq_web_search(query: str, num: int = 5) -> List[dict]:
+    """Sử dụng Groq AI để tìm kiếm và cung cấp tri thức mở rộng bên ngoài."""
+    if not GROQ_API_KEY:
         return []
 
-    url    = "https://www.googleapis.com/customsearch/v1"
-    params = {
-        "key": GOOGLE_SEARCH_API_KEY,
-        "cx":  GOOGLE_SEARCH_CX,
-        "q":   query,
-        "num": min(num, 10),
-        "hl":  "vi",
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0"
+    }
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Bạn là công cụ tìm kiếm và cung cấp tri thức mở rộng (Web Knowledge Engine). "
+                    "Hãy tìm kiếm và cung cấp thông tin cập nhật, chính xác, súc tích về chủ đề của người dùng. "
+                    "BẮT BUỘC trả về đúng định dạng JSON object: {\"results\": [{\"title\": \"...\", \"snippet\": \"...\", \"url\": \"...\"}]}"
+                )
+            },
+            {"role": "user", "content": f"Chủ đề tìm kiếm: {query}"}
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0.2
     }
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+            async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status != 200:
                     return []
-                data  = await resp.json()
-                items = data.get("items", [])
+                data = await resp.json()
+                content = data["choices"][0]["message"]["content"]
+                parsed = json.loads(content)
+                items = parsed.get("results", [])
                 return [
                     {
-                        "title":   item.get("title", ""),
-                        "url":     item.get("link", ""),
-                        "snippet": item.get("snippet", ""),
+                        "title": item.get("title", "Tri thức mở rộng (Groq)"),
+                        "url": item.get("url", "https://groq.com"),
+                        "snippet": item.get("snippet", "")
                     }
-                    for item in items
+                    for item in items[:num]
                 ]
-    except Exception:
+    except Exception as e:
+        print(f"Lỗi Groq search: {e}")
         return []
 
 
@@ -281,29 +293,28 @@ def _build_web_context(web_results: List[dict]) -> str:
 
 def get_embedding(texts: list, model_name: str = DEFAULT_EMBED_MODEL) -> list:
     all_embeddings = []
-    batch_size     = 90
+    batch_size     = 50
 
     for i in range(0, len(texts), batch_size):
         batch = texts[i:i + batch_size]
-        try:
-            result = genai.embed_content(
-                model=model_name,
-                content=batch,
-                task_type="retrieval_document"
-            )
-            all_embeddings.extend(result['embedding'])
-        except Exception as e:
-            if "429" in str(e) or "quota" in str(e).lower():
-                print(f"[Wait] Quá tải API, đang đợi 60s...")
-                time.sleep(60)
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
                 result = genai.embed_content(
                     model=model_name,
                     content=batch,
                     task_type="retrieval_document"
                 )
                 all_embeddings.extend(result['embedding'])
-            else:
-                raise e
+                break
+            except Exception as e:
+                if ("429" in str(e) or "quota" in str(e).lower()) and attempt < max_retries - 1:
+                    wait_time = 15 * (attempt + 1)
+                    print(f"[Wait] API Quota (thu lai {attempt + 1}/{max_retries}), doi {wait_time}s...")
+                    time.sleep(wait_time)
+                else:
+                    raise e
+        time.sleep(1.5)
     return all_embeddings
 
 
@@ -339,15 +350,16 @@ def _build_context(
 
 
 def _build_cited_prompt(question: str, context: str) -> str:
-    return f"""Bạn là một trợ lý hỏi đáp tài liệu học tập trung thực.
-Nhiệm vụ: Hãy trả lời câu hỏi dựa TRÊN ĐÚNG THÔNG TIN TRONG PHẦN NGỮ CẢNH.
+    return f"""Bạn là một trợ lý hỏi đáp tài liệu học tập trung thực và chính xác.
+Nhiệm vụ: Hãy trả lời câu hỏi BẮT BUỘC DỰA TRÊN ĐÚNG THÔNG TIN TỪ CÁC TÀI LIỆU ĐÃ CUNG CẤP TRONG PHẦN NGỮ CẢNH.
 
 ---
 HƯỚNG DẪN QUAN TRỌNG:
-1. TUYỆT ĐỐI KHÔNG dùng kiến thức bên ngoài. Nếu không có thông tin, hãy nói: "Tôi không biết câu trả lời dựa trên tài liệu đã cung cấp."
-2. Chèn nhãn trích dẫn [Nguồn X] ở cuối mỗi ý.
+1. ĐÁP ÁN BẮT BUỘC DỰA VÀO CÁC TÀI LIỆU CÓ SẴN TRONG NGỮ CẢNH. TUYỆT ĐỐI KHÔNG suy diễn hoặc bịa đặt thông tin bên ngoài tài liệu. Nếu tài liệu không chứa đủ thông tin để trả lời, hãy nói rõ: "Dựa trên các tài liệu đã cung cấp, không có đủ thông tin để trả lời câu hỏi này."
+2. Chèn nhãn trích dẫn [Nguồn X] tương ứng ở cuối mỗi ý hoặc mỗi đoạn thông tin lấy từ tài liệu.
+3. Trả lời bằng tiếng Việt rõ ràng, giải thích cặn kẽ và bám sát nguyên văn hoặc ý nghĩa trong tài liệu học tập.
 
-NGỮ CẢNH:
+NGỮ CẢNH TÀI LIỆU:
 {context}
 
 CÂU HỎI:
